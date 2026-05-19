@@ -1,0 +1,132 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchvision import transforms, models, datasets
+from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
+import numpy as np
+from torch import optim
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+# Data Transformations for MNIST
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))  # Normalize with mean 0.5 and std 0.5 for grayscale images
+])
+
+# Load MNIST dataset
+train_data = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+test_data = datasets.MNIST(root='./data', train=False, download=True, transform=transform)
+
+# DataLoader for training and testing
+train_loader = DataLoader(train_data, batch_size=32, shuffle=True)
+test_loader = DataLoader(test_data, batch_size=32, shuffle=False)
+
+# Display a sample image
+im, label = train_data[200]  # Display the 200th image
+plt.imshow(im.squeeze(), cmap='gray')
+plt.title(f"Label: {label}")
+plt.show()
+
+# Define the Model
+def get_model():
+    model = models.resnet18(pretrained=True)
+    
+    # Modify the first convolution layer to accept 1 channel input (grayscale images)
+    model.conv1 = nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
+    
+    for param in model.parameters():
+        param.requires_grad = False  # Freeze the pretrained layers
+
+    # Modify the final fully connected layer for 10 classes (MNIST has 10 classes)
+    model.fc = nn.Sequential(
+        nn.Flatten(),
+        nn.Linear(512, 128),
+        nn.ReLU(),
+        nn.Dropout(0.2),
+        nn.Linear(128, 10)  # Output layer for 10 classes (digits 0-9)
+    )
+    
+    loss_fn = nn.CrossEntropyLoss()  # Use CrossEntropyLoss for multi-class classification
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    
+    return model.to(device), loss_fn, optimizer
+
+# Model Summary
+model, criterion, optimizer = get_model()
+from torchsummary import summary
+summary(model, torch.zeros(1, 1, 28, 28))  # The input tensor shape for MNIST (1 channel, 28x28)
+
+# Training functions
+def train_batch(x, y, model, opt, loss_fn):
+    model.train()
+    prediction = model(x)
+    batch_loss = loss_fn(prediction, y)
+    batch_loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+    return batch_loss.item()
+
+@torch.no_grad()
+def accuracy(x, y, model):
+    model.eval()
+    prediction = model(x)
+    _, preds = torch.max(prediction, 1)  # Get the predicted class with the highest probability
+    is_correct = (preds == y)
+    return is_correct.cpu().numpy().tolist()
+
+# Training loop
+train_losses, train_accuracies = [], []
+val_accuracies = []
+
+for epoch in range(5):
+    train_epoch_losses, train_epoch_accuracies = [], []
+    val_epoch_accuracies = []
+
+    for ix, batch in enumerate(iter(train_loader)):
+        x, y = batch
+        x, y = x.to(device), y.to(device)  # Move data to device (GPU/CPU)
+        
+        batch_loss = train_batch(x, y, model, optimizer, criterion)
+        train_epoch_losses.append(batch_loss)
+
+    train_epoch_loss = np.mean(train_epoch_losses)
+
+    # Training Accuracy
+    for ix, batch in enumerate(iter(train_loader)):
+        x, y = batch
+        x, y = x.to(device), y.to(device)
+        
+        is_correct = accuracy(x, y, model)
+        train_epoch_accuracies.extend(is_correct)
+        
+    train_epoch_accuracy = np.mean(train_epoch_accuracies)
+
+    # Validation Accuracy
+    for ix, batch in enumerate(iter(test_loader)):
+        x, y = batch
+        x, y = x.to(device), y.to(device)
+        
+        val_is_correct = accuracy(x, y, model)
+        val_epoch_accuracies.extend(val_is_correct)
+        
+    val_epoch_accuracy = np.mean(val_epoch_accuracies)
+
+    print(f"Epoch {epoch+1}/5, Training Loss: {train_epoch_loss:.4f}, "
+          f"Training Accuracy: {train_epoch_accuracy:.4f}, Validation Accuracy: {val_epoch_accuracy:.4f}")
+
+    train_losses.append(train_epoch_loss)
+    train_accuracies.append(train_epoch_accuracy)
+    val_accuracies.append(val_epoch_accuracy)
+
+# Plotting the results
+epochs = np.arange(5) + 1
+plt.plot(epochs, train_accuracies, 'b', label='Training accuracy')
+plt.plot(epochs, val_accuracies, 'r', label='Validation accuracy')
+plt.title('Training and Validation Accuracy for MNIST with ResNet18')
+plt.xlabel('Epochs')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.grid(True)
+plt.show()
+
